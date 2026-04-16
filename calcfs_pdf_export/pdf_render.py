@@ -171,6 +171,8 @@ def render_starting_order_pdf(
         header_cells.append(Paragraph(_esc("Тренер"), hdr_l))
     data: list[list] = [header_cells]
     header_like_rows: list[int] = []
+    warmup_block_ranges: list[tuple[int, int]] = []
+    block_start: int | None = None
     last_group = -1
     col_count = len(header_cells)
     pre_warmup_texts = pre_warmup_texts or {}
@@ -190,6 +192,9 @@ def render_starting_order_pdf(
                     note_row[0] = Paragraph(_esc(str(note).strip()), warmup_style)
                     data.append(note_row)
                     header_like_rows.append(len(data) - 1)
+                if block_start is not None:
+                    warmup_block_ranges.append((block_start, len(data) - 1))
+            block_start = len(data)
             for note in pre_warmup_texts.get(r.warmup_group, []):
                 note_row = [""] * col_count
                 note_row[0] = Paragraph(_esc(str(note).strip()), warmup_style)
@@ -226,6 +231,8 @@ def render_starting_order_pdf(
             note_row[0] = Paragraph(_esc(str(note).strip()), warmup_style)
             data.append(note_row)
             header_like_rows.append(len(data) - 1)
+        if block_start is not None:
+            warmup_block_ranges.append((block_start, len(data) - 1))
 
     extra_fracs: list[float] = []
     if include_active_rank:
@@ -271,7 +278,6 @@ def render_starting_order_pdf(
             )
         )
     for row_idx in header_like_rows:
-        end_row = min(len(data) - 1, row_idx + 1)
         tbl.setStyle(
             TableStyle(
                 [
@@ -280,7 +286,14 @@ def render_starting_order_pdf(
                     ("BACKGROUND", (0, row_idx), (ncols - 1, row_idx), colors.HexColor("#f1f1f1")),
                     ("TOPPADDING", (0, row_idx), (ncols - 1, row_idx), 4),
                     ("BOTTOMPADDING", (0, row_idx), (ncols - 1, row_idx), 4),
-                    ("NOSPLIT", (0, row_idx), (ncols - 1, end_row)),
+                ]
+            )
+        )
+    for start_row, end_row in warmup_block_ranges:
+        tbl.setStyle(
+            TableStyle(
+                [
+                    ("NOSPLIT", (0, start_row), (ncols - 1, end_row)),
                 ]
             )
         )

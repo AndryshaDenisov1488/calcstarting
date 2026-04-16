@@ -8,4 +8,4 @@ if (-not (Test-Path ".venv\Scripts\python.exe")) {
 }
 & .\.venv\Scripts\pip.exe install -r requirements.txt pyinstaller
 & .\.venv\Scripts\pyinstaller.exe --noconfirm --clean CalcFSPdfExport.spec
-Write-Host "Готово: $root\dist\CalcFSPdfExport.exe"
+Write-Host "Done: $root\dist\CalcFSPdfExport.exe"
