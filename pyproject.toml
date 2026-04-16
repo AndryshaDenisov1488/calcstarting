@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "calcfs-pdf-export"
+version = "0.1.0"
+description = "PDF export from ISUCalcFS DBF (starting order with clubs)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "dbfread>=2.0.7",
+    "reportlab>=4.0.0",
+    "pypdf>=4.0.0",
+    "PySide6>=6.6.0",
+    "olefile>=0.47",
+]
+
+[project.scripts]
+calcfs-pdf-export = "calcfs_pdf_export.app:run_app"
+calcfs-pdf-export-cli = "calcfs_pdf_export.cli:run_cli"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["calcfs_pdf_export*"]

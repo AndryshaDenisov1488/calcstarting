@@ -1,0 +1,52 @@
+# Виртуальное окружение
+.venv/
+venv/
+env/
+
+# PyInstaller
+build/
+dist/
+*.spec.bak
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+*.egg
+
+# Тесты / кэш
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# IDE / ОС
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Локальные артефакты
+*.log
+_test_*.pdf
+~$*
+
+# Cursor (локальные настройки воркспейса)
+.cursor/
+
+# Локальные выгрузки/дампы (не коммитить)
+docs/schools_*.json
+
+# Полная выгрузка папки соревнования (DBF/HTML/PDF) — только локально
+21220326*/
+
+# Случайный файл в корне (не часть проекта)
+/1bf97a20ff6cc99a142c05f99d8413f8.jpg

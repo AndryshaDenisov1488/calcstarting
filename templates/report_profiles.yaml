@@ -1,0 +1,12 @@
+# Профили отчётов: связь между файлом .rpt (метаданные) и движком Python.
+# Сейчас исполняется только движок starting_order_v1; .rpt не парсится как шаблон макета.
+
+profiles:
+  - id: starting_order_with_club_names
+    rpt_filename: StartingOrderWithClubNames.rpt
+    engine: starting_order_v1
+    description: >
+      Стартовый порядок по паре (категория × сегмент), клуб из CLB.DBF по PCT_CLBID.
+    pdf_options:
+      include_nation: true
+      include_status: false
