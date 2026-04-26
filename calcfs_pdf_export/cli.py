@@ -12,13 +12,13 @@ from pathlib import Path
 
 from calcfs_pdf_export.calcfs_store import discover_cat_scp_pairs, load_calcfs_folder
 from calcfs_pdf_export.ids import normalize_id
-from calcfs_pdf_export.export_pipeline import export_starting_order_bundle
+from calcfs_pdf_export.export_pipeline import export_protocol_bundle, export_starting_order_bundle
 
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Экспорт стартового порядка (CalcFS DBF) в PDF без GUI.")
+    parser = argparse.ArgumentParser(description="Экспорт стартового порядка или итогового протокола (CalcFS DBF) в PDF без GUI.")
     parser.add_argument("--base", required=True, type=Path, help="Папка с PRF.DBF, PAR.DBF, …")
     parser.add_argument("--out", required=True, type=Path, help="Итоговый объединённый PDF")
     parser.add_argument("--all", action="store_true", help="Все найденные пары категория×сегмент")
@@ -30,6 +30,19 @@ def main() -> int:
         help="Пара ID (повторить для нескольких). Пример: --pair 1:5 --pair 1:6",
     )
     parser.add_argument("--keep-temp", action="store_true", help="Не удалять временные part_*.pdf")
+    parser.add_argument("--protocol", action="store_true", help="Сформировать итоговый протокол вместо стартового листа")
+    parser.add_argument(
+        "--protocol-renderer",
+        choices=["rpt", "python"],
+        default="rpt",
+        help="Рендер итогового протокола: штатные Crystal RPT или Python/reportlab fallback",
+    )
+    parser.add_argument("--no-result", action="store_true", help="В protocol mode не добавлять ResultWithClubNames")
+    parser.add_argument("--no-segment-details", action="store_true", help="В protocol mode не добавлять ResultForSegmentDetails")
+    parser.add_argument("--no-judges-scores", action="store_true", help="В protocol mode не добавлять JudgesScores")
+    parser.add_argument("--result-rpt", type=Path, help="Путь к RPT-шаблону для ResultWithClubNames")
+    parser.add_argument("--segment-details-rpt", type=Path, help="Путь к RPT-шаблону для ResultForSegmentDetails")
+    parser.add_argument("--judges-scores-rpt", type=Path, help="Путь к RPT-шаблону для JudgesScores")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -63,12 +76,34 @@ def main() -> int:
         logging.error("Укажите --all или хотя бы одну --pair CAT:SCP")
         return 2
 
-    results, merged = export_starting_order_bundle(
-        args.base,
-        selected,
-        args.out,
-        keep_temp=args.keep_temp,
-    )
+    if args.protocol:
+        rpt_template_paths = {
+            key: path
+            for key, path in {
+                "result": args.result_rpt,
+                "segment_details": args.segment_details_rpt,
+                "judges_scores": args.judges_scores_rpt,
+            }.items()
+            if path is not None
+        }
+        results, merged = export_protocol_bundle(
+            args.base,
+            selected,
+            args.out,
+            keep_temp=args.keep_temp,
+            include_result=not args.no_result,
+            include_segment_details=not args.no_segment_details,
+            include_judges_scores=not args.no_judges_scores,
+            protocol_renderer=args.protocol_renderer,
+            rpt_template_paths=rpt_template_paths,
+        )
+    else:
+        results, merged = export_starting_order_bundle(
+            args.base,
+            selected,
+            args.out,
+            keep_temp=args.keep_temp,
+        )
     for r in results:
         logging.info("%s %s: %s", "OK" if r.ok else "FAIL", r.label, r.message)
     if not merged:

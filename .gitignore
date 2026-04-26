@@ -48,5 +48,14 @@ docs/schools_*.json
 # Полная выгрузка папки соревнования (DBF/HTML/PDF) — только локально
 21220326*/
 
+# Материалы исследования ISUCalcFS — справочники и локальные примеры
+/ISUCALCFS_21220326БЕККЕРФМ_FULL_GUIDE.md
+/ISUCALCFS_DEVELOPER_GUIDE.md
+/rules.pdf
+/Протокол.pdf
+/XML from example/
+/XML step by step/
+/example/
+
 # Случайный файл в корне (не часть проекта)
 /1bf97a20ff6cc99a142c05f99d8413f8.jpg

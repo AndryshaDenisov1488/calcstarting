@@ -25,6 +25,7 @@ class CalcFsSnapshot:
     pct: list[dict[str, Any]]
     prf: list[dict[str, Any]]
     clb: list[dict[str, Any]]
+    jps: list[dict[str, Any]]
 
 
 def _load_table(base: Path, stem: str) -> tuple[list[dict[str, Any]], str] | tuple[list, str]:
@@ -59,7 +60,7 @@ def load_calcfs_folder(base: Path) -> CalcFsSnapshot:
 
     encodings: dict[str, str] = {}
     tables: dict[str, list] = {}
-    for stem in ("EVT", "CAT", "SCP", "PAR", "PCT", "PRF", "CLB"):
+    for stem in ("EVT", "CAT", "SCP", "PAR", "PCT", "PRF", "CLB", "JPS"):
         rows, enc = _load_table(base, stem)
         tables[stem.lower()] = rows
         if enc:
@@ -84,6 +85,7 @@ def load_calcfs_folder(base: Path) -> CalcFsSnapshot:
         pct=tables["pct"],
         prf=prf,
         clb=tables["clb"],
+        jps=tables["jps"],
     )
 
 

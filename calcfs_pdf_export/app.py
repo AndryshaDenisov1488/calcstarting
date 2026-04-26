@@ -8,8 +8,9 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QTextOption
+from PySide6.QtGui import QBrush, QColor, QTextOption
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -37,7 +39,11 @@ from PySide6.QtWidgets import (
 
 from calcfs_pdf_export import __version__
 from calcfs_pdf_export.calcfs_store import discover_cat_scp_pairs, event_date_range, event_title, load_calcfs_folder
-from calcfs_pdf_export.export_pipeline import export_starting_order_bundle
+from calcfs_pdf_export.dbf_utils import rec_get
+from calcfs_pdf_export.evsk_titles import cat_key, category_by_id, official_title_for_category, rule_for_category
+from calcfs_pdf_export.export_pipeline import export_protocol_bundle, export_starting_order_bundle
+from calcfs_pdf_export.ids import same_id
+from calcfs_pdf_export.rpt_export import JUDGES_SCORES, RESULT_FOR_SEGMENT_DETAILS, RESULT_WITH_CLUB_NAMES, RPT_DIR
 from calcfs_pdf_export.starting_order_report import build_starting_order_rows
 
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -73,6 +79,30 @@ def _checkbox_with_wrapped_label(text: str) -> tuple[QWidget, QCheckBox]:
     return row, cb
 
 
+def _rpt_picker_row(label: str, default_path: Path, handler) -> tuple[QWidget, QLineEdit]:
+    row = QWidget()
+    lay = QVBoxLayout(row)
+    lay.setContentsMargins(0, 0, 0, 0)
+    lay.setSpacing(3)
+    lbl = QLabel(label)
+    lbl.setWordWrap(True)
+    edit_row = QWidget()
+    edit_lay = QHBoxLayout(edit_row)
+    edit_lay.setContentsMargins(0, 0, 0, 0)
+    edit_lay.setSpacing(4)
+    edit = QLineEdit(str(default_path))
+    edit.setMinimumWidth(0)
+    edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    btn = QPushButton("Обзор…")
+    btn.setMinimumWidth(0)
+    btn.clicked.connect(handler)
+    edit_lay.addWidget(edit, 1)
+    edit_lay.addWidget(btn, 0)
+    lay.addWidget(lbl)
+    lay.addWidget(edit_row)
+    return row, edit
+
+
 def _setup_logging(log_widget: QTextEdit) -> None:
     log_widget.setReadOnly(True)
 
@@ -106,6 +136,9 @@ class MainWindow(QMainWindow):
         self._group_insert_texts: dict[int, list[tuple[str, int, str]]] = {}
         self._snapshot = None
         self._pair_participant_counts: dict[tuple[object, object], int] = {}
+        self._category_age_selection: dict[str, list[str]] = {}
+        self._protocol_age_checkboxes: list[QCheckBox] = []
+        self._protocol_rpt_edits: dict[str, QLineEdit] = {}
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -150,14 +183,26 @@ class MainWindow(QMainWindow):
         self.list_widget.setWordWrap(True)
         self.list_widget.setUniformItemSizes(False)
         self.list_widget.setSpacing(2)
-        self.list_widget.setSelectionMode(QListWidget.MultiSelection)
+        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.list_widget.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.list_widget.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.list_widget.setDragDropOverwriteMode(False)
+        self.list_widget.setDropIndicatorShown(True)
+        self.list_widget.itemClicked.connect(self._toggle_category_item_check)
         self.list_widget.itemSelectionChanged.connect(self._update_selected_stats_label)
+        self.list_widget.itemSelectionChanged.connect(self._update_protocol_title_editor)
         categories_layout.addWidget(self.list_widget, 1)
         row_order = QGridLayout()
         row_order.setHorizontalSpacing(6)
         row_order.setVerticalSpacing(6)
         lbl_row = QLabel("Порядок строк:")
         row_order.addWidget(lbl_row, 0, 0, 1, 2)
+        btn_check_all = QPushButton("Выбрать все")
+        btn_check_all.clicked.connect(self.handle_check_all_categories)
+        row_order.addWidget(btn_check_all, 1, 0)
+        btn_uncheck_all = QPushButton("Снять все")
+        btn_uncheck_all.clicked.connect(self.handle_uncheck_all_categories)
+        row_order.addWidget(btn_uncheck_all, 1, 1)
         order_btns = [
             ("Вверх", self.handle_move_up),
             ("Вниз", self.handle_move_down),
@@ -167,7 +212,7 @@ class MainWindow(QMainWindow):
         for i, (text, handler) in enumerate(order_btns):
             b = QPushButton(text)
             b.clicked.connect(handler)
-            row_order.addWidget(b, 1 + i // 2, i % 2)
+            row_order.addWidget(b, 2 + i // 2, i % 2)
         categories_layout.addLayout(row_order)
 
         groups_box = QGroupBox("Порядок внутри группы склейки")
@@ -239,6 +284,10 @@ class MainWindow(QMainWindow):
         self.btn_export.setMinimumWidth(0)
         self.btn_export.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed)
         self.btn_export.clicked.connect(self.handle_export)
+        self.btn_protocol_export = QPushButton("Сформировать итоговый протокол…")
+        self.btn_protocol_export.setMinimumWidth(0)
+        self.btn_protocol_export.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed)
+        self.btn_protocol_export.clicked.connect(self.handle_protocol_export)
         self.cmb_merge_from = QComboBox()
         self.cmb_merge_to = QComboBox()
         for cmb in (self.cmb_merge_from, self.cmb_merge_to):
@@ -281,7 +330,76 @@ class MainWindow(QMainWindow):
         top_right_layout = QVBoxLayout(top_right)
         top_right_layout.setContentsMargins(0, 0, 0, 0)
         top_right_layout.setSpacing(8)
-        top_right_layout.addWidget(options_box, 0)
+
+        protocol_box = QGroupBox("Итоговый протокол")
+        protocol_layout = QVBoxLayout(protocol_box)
+        w_protocol_rpt, self.chk_protocol_use_rpt = _checkbox_with_wrapped_label(
+            "Использовать штатные Crystal RPT из C:\\ISUCalcFS\\reports\\RpXiEn"
+        )
+        self.chk_protocol_use_rpt.setChecked(True)
+        w_protocol_1, self.chk_protocol_result = _checkbox_with_wrapped_label("Окончательные места: ResultWithClubNames")
+        w_protocol_2, self.chk_protocol_segment_details = _checkbox_with_wrapped_label("Горизонталка: ResultForSegmentDetails")
+        w_protocol_3, self.chk_protocol_judges_scores = _checkbox_with_wrapped_label("Судейские оценки: JudgesScores")
+        for cb in (self.chk_protocol_result, self.chk_protocol_segment_details, self.chk_protocol_judges_scores):
+            cb.setChecked(True)
+        protocol_layout.addWidget(w_protocol_rpt)
+        protocol_layout.addWidget(w_protocol_1)
+        protocol_layout.addWidget(w_protocol_2)
+        protocol_layout.addWidget(w_protocol_3)
+        rpt_box = QGroupBox("Шаблоны Crystal RPT")
+        rpt_layout = QVBoxLayout(rpt_box)
+        row_result, self.edt_rpt_result = _rpt_picker_row(
+            "Окончательные места", RPT_DIR / RESULT_WITH_CLUB_NAMES.filename, lambda: self._pick_rpt_template("result")
+        )
+        row_details, self.edt_rpt_segment_details = _rpt_picker_row(
+            "Горизонталки", RPT_DIR / RESULT_FOR_SEGMENT_DETAILS.filename, lambda: self._pick_rpt_template("segment_details")
+        )
+        row_judges, self.edt_rpt_judges_scores = _rpt_picker_row(
+            "Судейские оценки", RPT_DIR / JUDGES_SCORES.filename, lambda: self._pick_rpt_template("judges_scores")
+        )
+        self._protocol_rpt_edits = {
+            "result": self.edt_rpt_result,
+            "segment_details": self.edt_rpt_segment_details,
+            "judges_scores": self.edt_rpt_judges_scores,
+        }
+        for row in (row_result, row_details, row_judges):
+            rpt_layout.addWidget(row)
+        protocol_layout.addWidget(rpt_box)
+        progress_box = QGroupBox("Ход формирования")
+        progress_layout = QVBoxLayout(progress_box)
+        self.lbl_protocol_progress = QLabel("Протокол ещё не формировался.")
+        self.lbl_protocol_progress.setWordWrap(True)
+        self.progress_protocol = QProgressBar()
+        self.progress_protocol.setRange(0, 1)
+        self.progress_protocol.setValue(0)
+        progress_layout.addWidget(self.lbl_protocol_progress)
+        progress_layout.addWidget(self.progress_protocol)
+        protocol_layout.addWidget(progress_box)
+        title_box = QGroupBox("Официальный заголовок категории")
+        title_layout = QVBoxLayout(title_box)
+        self.lbl_protocol_title_preview = QLabel("Выберите категорию, чтобы увидеть заголовок по ЕВСК.")
+        self.lbl_protocol_title_preview.setWordWrap(True)
+        title_layout.addWidget(self.lbl_protocol_title_preview)
+        self.protocol_age_widget = QWidget()
+        self.protocol_age_layout = QVBoxLayout(self.protocol_age_widget)
+        self.protocol_age_layout.setContentsMargins(0, 0, 0, 0)
+        self.protocol_age_layout.setSpacing(4)
+        title_layout.addWidget(self.protocol_age_widget)
+        protocol_layout.addWidget(title_box)
+        protocol_layout.addWidget(self.btn_protocol_export)
+
+        export_tabs = QTabWidget()
+        start_tab = QWidget()
+        start_tab_layout = QVBoxLayout(start_tab)
+        start_tab_layout.setContentsMargins(0, 0, 0, 0)
+        start_tab_layout.addWidget(options_box)
+        protocol_tab = QWidget()
+        protocol_tab_layout = QVBoxLayout(protocol_tab)
+        protocol_tab_layout.setContentsMargins(0, 0, 0, 0)
+        protocol_tab_layout.addWidget(protocol_box)
+        export_tabs.addTab(start_tab, "Стартовые листы")
+        export_tabs.addTab(protocol_tab, "Итоговый протокол")
+        top_right_layout.addWidget(export_tabs, 0)
 
         stats_box = QGroupBox("Статистика")
         stats_layout = QVBoxLayout(stats_box)
@@ -328,6 +446,7 @@ class MainWindow(QMainWindow):
         splitter.setSizes([1050, 620])
 
         self.btn_export.setStyleSheet("QPushButton { background-color: #2e7d32; color: white; font-weight: 600; }")
+        self.btn_protocol_export.setStyleSheet("QPushButton { background-color: #1565c0; color: white; font-weight: 600; }")
         self.btn_clear_group.setStyleSheet("QPushButton { background-color: #c62828; color: white; font-weight: 600; }")
 
         _setup_logging(self.log)
@@ -351,6 +470,18 @@ class MainWindow(QMainWindow):
         if not self._snapshot:
             return "Стартовый протокол.pdf"
         chunks = ["Стартовый протокол"]
+        date_part = self._sanitize_filename_part(event_date_range(self._snapshot))
+        name_part = self._sanitize_filename_part(event_title(self._snapshot))
+        if date_part:
+            chunks.append(date_part)
+        if name_part:
+            chunks.append(name_part)
+        return " ".join(chunks) + ".pdf"
+
+    def _default_protocol_output_filename(self) -> str:
+        if not self._snapshot:
+            return "Итоговый протокол.pdf"
+        chunks = ["Итоговый протокол"]
         date_part = self._sanitize_filename_part(event_date_range(self._snapshot))
         name_part = self._sanitize_filename_part(event_title(self._snapshot))
         if date_part:
@@ -388,6 +519,8 @@ class MainWindow(QMainWindow):
         self._group_insert_texts.clear()
         self._snapshot = None
         self._pair_participant_counts.clear()
+        self._category_age_selection.clear()
+        self._update_protocol_title_editor()
         self.tabs_groups.clear()
         if not self._base_dir:
             QMessageBox.warning(self, "Папка", "Сначала выберите папку с DBF.")
@@ -402,6 +535,12 @@ class MainWindow(QMainWindow):
         for cat_id, scp_id, label in self._pairs:
             item = QListWidgetItem(self._display_label(cat_id, scp_id, label))
             item.setData(Qt.UserRole, (cat_id, scp_id, label))
+            item.setData(Qt.ItemDataRole.CheckStateRole, Qt.CheckState.Unchecked)
+            item.setFlags(
+                (item.flags() | Qt.ItemFlag.ItemIsDragEnabled)
+                & ~Qt.ItemFlag.ItemIsUserCheckable
+                & ~Qt.ItemFlag.ItemIsDropEnabled
+            )
             self.list_widget.addItem(item)
             self._pair_participant_counts[(cat_id, scp_id)] = 0
         for cat_id, scp_id, _ in self._pairs:
@@ -422,6 +561,7 @@ class MainWindow(QMainWindow):
                     self._log.exception("Ошибка восстановления сохраненного разбиения")
         self._update_group_stats_label()
         self._update_selected_stats_label()
+        self._update_protocol_title_editor()
 
     def _collect_layout_state(self) -> dict:
         groups = {self._pair_key(c, s): int(g) for (c, s), g in self._merge_groups.items()}
@@ -436,6 +576,12 @@ class MainWindow(QMainWindow):
             "group_warmup_size": {str(k): int(v) for k, v in self._group_warmup_size.items()},
             "group_insert_texts": group_texts,
             "global_warmup_size": int(self.spn_warmup.value()),
+            "protocol_age_groups": self._category_age_selection,
+            "protocol_rpt_templates": {
+                key: edit.text().strip()
+                for key, edit in self._protocol_rpt_edits.items()
+                if edit.text().strip()
+            },
         }
 
     def _apply_layout_state(self, state: dict) -> None:
@@ -472,8 +618,27 @@ class MainWindow(QMainWindow):
                 self._group_insert_texts[gid] = parsed
         if state.get("global_warmup_size"):
             self.spn_warmup.setValue(max(1, int(state["global_warmup_size"])))
+        age_state = state.get("protocol_age_groups") or {}
+        self._category_age_selection = {
+            str(k): [str(v).strip() for v in values or [] if str(v).strip()]
+            for k, values in age_state.items()
+        }
+        for key, path in (state.get("protocol_rpt_templates") or {}).items():
+            edit = self._protocol_rpt_edits.get(str(key))
+            if edit and str(path).strip():
+                edit.setText(str(path).strip())
         self._refresh_labels()
         self._rebuild_group_tabs()
+        self._update_protocol_title_editor()
+
+    def _save_layout_state_silent(self) -> None:
+        state_path = self._state_file_path()
+        if not state_path:
+            return
+        try:
+            state_path.write_text(json.dumps(self._collect_layout_state(), ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            self._log.exception("Не удалось сохранить настройки протокола")
 
     def handle_save_layout(self) -> None:
         state_path = self._state_file_path()
@@ -484,31 +649,56 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Сохранено", f"Разбиение сохранено:\n{state_path}")
 
     def _selected_indices(self) -> list[int]:
-        return [i for i in range(self.list_widget.count()) if self.list_widget.item(i).isSelected()]
+        row = self.list_widget.currentRow()
+        return [row] if row >= 0 else []
+
+    def _checked_category_items(self) -> list[QListWidgetItem]:
+        return [
+            self.list_widget.item(i)
+            for i in range(self.list_widget.count())
+            if self.list_widget.item(i).checkState() == Qt.CheckState.Checked
+        ]
+
+    def _toggle_category_item_check(self, item: QListWidgetItem) -> None:
+        item.setCheckState(Qt.CheckState.Unchecked if item.checkState() == Qt.CheckState.Checked else Qt.CheckState.Checked)
+        self._update_selected_stats_label()
+        self._update_protocol_title_editor()
+
+    def handle_check_all_categories(self) -> None:
+        for i in range(self.list_widget.count()):
+            self.list_widget.item(i).setCheckState(Qt.CheckState.Checked)
+        self._update_selected_stats_label()
+        self._update_protocol_title_editor()
+
+    def handle_uncheck_all_categories(self) -> None:
+        for i in range(self.list_widget.count()):
+            self.list_widget.item(i).setCheckState(Qt.CheckState.Unchecked)
+        self._update_selected_stats_label()
+        self._update_protocol_title_editor()
 
     def handle_move_up(self) -> None:
         for idx in self._selected_indices():
-            if idx <= 0 or self.list_widget.item(idx - 1).isSelected():
+            if idx <= 0:
                 continue
             it = self.list_widget.takeItem(idx)
             self.list_widget.insertItem(idx - 1, it)
-            it.setSelected(True)
+            self.list_widget.setCurrentItem(it)
 
     def handle_move_down(self) -> None:
         idxs = self._selected_indices()
         for idx in reversed(idxs):
-            if idx >= self.list_widget.count() - 1 or self.list_widget.item(idx + 1).isSelected():
+            if idx >= self.list_widget.count() - 1:
                 continue
             it = self.list_widget.takeItem(idx)
             self.list_widget.insertItem(idx + 1, it)
-            it.setSelected(True)
+            self.list_widget.setCurrentItem(it)
 
     def handle_move_top(self) -> None:
         idxs = self._selected_indices()
         items = [self.list_widget.takeItem(i - off) for off, i in enumerate(idxs)]
         for pos, it in enumerate(items):
             self.list_widget.insertItem(pos, it)
-            it.setSelected(True)
+            self.list_widget.setCurrentItem(it)
 
     def handle_move_bottom(self) -> None:
         idxs = self._selected_indices()
@@ -516,11 +706,11 @@ class MainWindow(QMainWindow):
         start = self.list_widget.count()
         for pos, it in enumerate(items):
             self.list_widget.insertItem(start + pos, it)
-            it.setSelected(True)
+            self.list_widget.setCurrentItem(it)
 
     def handle_assign_group(self) -> None:
         gid = int(self.spn_merge_group.value())
-        items = self.list_widget.selectedItems()
+        items = self._checked_category_items() or self.list_widget.selectedItems()
         if not items:
             return
         for it in items:
@@ -845,16 +1035,168 @@ class MainWindow(QMainWindow):
         self._update_group_stats_label()
 
     def _update_selected_stats_label(self) -> None:
-        selected_items = self.list_widget.selectedItems()
-        if not selected_items:
-            self.lbl_selected_stats.setText("Выделение: строк 0, участников 0")
+        checked_items = self._checked_category_items()
+        if not checked_items:
+            self.lbl_selected_stats.setText("Отмечено: строк 0, участников 0")
             return
-        rows = len(selected_items)
+        rows = len(checked_items)
         participants = 0
-        for it in selected_items:
+        for it in checked_items:
             c, s, _ = it.data(Qt.UserRole)
             participants += self._pair_participant_counts.get((c, s), 0)
-        self.lbl_selected_stats.setText(f"Выделение: строк {rows}, участников {participants}")
+        self.lbl_selected_stats.setText(f"Отмечено: строк {rows}, участников {participants}")
+
+    def _current_protocol_cat_id(self) -> object | None:
+        current = self.list_widget.currentItem()
+        if current:
+            return current.data(Qt.UserRole)[0]
+        checked_items = self._checked_category_items()
+        if checked_items:
+            return checked_items[0].data(Qt.UserRole)[0]
+        if self.list_widget.count():
+            return self.list_widget.item(0).data(Qt.UserRole)[0]
+        return None
+
+    def _clear_protocol_age_layout(self) -> None:
+        self._protocol_age_checkboxes.clear()
+        while self.protocol_age_layout.count():
+            item = self.protocol_age_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _update_protocol_title_editor(self) -> None:
+        if not hasattr(self, "protocol_age_layout"):
+            return
+        self._clear_protocol_age_layout()
+        if not self._snapshot:
+            self.lbl_protocol_title_preview.setText("Выберите папку и категорию, чтобы увидеть заголовок по ЕВСК.")
+            return
+        cat_id = self._current_protocol_cat_id()
+        cat = category_by_id(self._snapshot, cat_id) if cat_id is not None else None
+        if not cat:
+            self.lbl_protocol_title_preview.setText("Выберите категорию, чтобы увидеть заголовок по ЕВСК.")
+            return
+        rule = rule_for_category(cat)
+        if not rule:
+            source = str(rec_get(cat, "CAT_NAME") or "").strip()
+            self.lbl_protocol_title_preview.setText(
+                "Для этой комбинации CAT_TYPE/CAT_LEVEL/CAT_GENDER пока нет правила. "
+                f"Будет использовано исходное название:\n{source}"
+            )
+            return
+        key = cat_key(rec_get(cat, "CAT_ID"))
+        selected = self._category_age_selection.get(key, list(rule.age_groups))
+        selected = [age for age in selected if age in rule.age_groups]
+        for age in rule.age_groups:
+            cb = QCheckBox(age)
+            cb.setChecked(age in selected)
+            cb.stateChanged.connect(lambda _state, cid=key: self._on_protocol_age_changed(cid))
+            self.protocol_age_layout.addWidget(cb)
+            self._protocol_age_checkboxes.append(cb)
+        if not rule.age_groups:
+            empty = QLabel("Для этого разряда возрастные группы не заданы в правилах.")
+            empty.setWordWrap(True)
+            self.protocol_age_layout.addWidget(empty)
+        title = official_title_for_category(cat, selected)
+        self.lbl_protocol_title_preview.setText(title or str(rec_get(cat, "CAT_NAME") or "").strip())
+
+    def _on_protocol_age_changed(self, category_key: str) -> None:
+        selected = [cb.text() for cb in self._protocol_age_checkboxes if cb.isChecked()]
+        self._category_age_selection[category_key] = selected
+        self._refresh_protocol_title_preview_only()
+        self._save_layout_state_silent()
+
+    def _refresh_protocol_title_preview_only(self) -> None:
+        if not self._snapshot:
+            return
+        cat_id = self._current_protocol_cat_id()
+        cat = category_by_id(self._snapshot, cat_id) if cat_id is not None else None
+        if not cat:
+            return
+        key = cat_key(rec_get(cat, "CAT_ID"))
+        title = official_title_for_category(cat, self._category_age_selection.get(key))
+        if title:
+            self.lbl_protocol_title_preview.setText(title)
+
+    def _collect_protocol_title_overrides(self) -> dict[object, str]:
+        if not self._snapshot:
+            return {}
+        overrides: dict[object, str] = {}
+        for cat in self._snapshot.cat:
+            key = cat_key(rec_get(cat, "CAT_ID"))
+            title = official_title_for_category(cat, self._category_age_selection.get(key))
+            if title:
+                overrides[rec_get(cat, "CAT_ID")] = title
+        return overrides
+
+    def _pick_rpt_template(self, key: str) -> None:
+        edit = self._protocol_rpt_edits.get(key)
+        if not edit:
+            return
+        current = Path(edit.text().strip()) if edit.text().strip() else RPT_DIR
+        start_dir = current.parent if current.is_file() else RPT_DIR
+        path, _ = QFileDialog.getOpenFileName(self, "Выбрать Crystal RPT", str(start_dir), "Crystal Reports (*.rpt)")
+        if not path:
+            return
+        edit.setText(path)
+        self._save_layout_state_silent()
+
+    def _collect_protocol_rpt_templates(self) -> dict[str, Path]:
+        templates: dict[str, Path] = {}
+        for key, edit in self._protocol_rpt_edits.items():
+            raw = edit.text().strip()
+            if not raw:
+                continue
+            path = Path(raw)
+            if path.is_file():
+                templates[key] = path
+            else:
+                self._log.warning("RPT шаблон не найден и будет использован штатный: %s", path)
+        return templates
+
+    def _set_category_row_background(self, cat_id: object, color: QColor | None) -> None:
+        brush = QBrush(color) if color else QBrush()
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            row_cat_id, _, _ = item.data(Qt.UserRole)
+            if same_id(row_cat_id, cat_id):
+                item.setBackground(brush)
+
+    def _reset_protocol_progress_ui(self) -> None:
+        for i in range(self.list_widget.count()):
+            self.list_widget.item(i).setBackground(QBrush())
+        self.progress_protocol.setRange(0, 1)
+        self.progress_protocol.setValue(0)
+        self.lbl_protocol_progress.setText("Подготовка итогового протокола...")
+        QApplication.processEvents()
+
+    def _on_protocol_progress(self, event: dict[str, object]) -> None:
+        total = int(event.get("total") or 0)
+        completed = int(event.get("completed") or 0)
+        if total > 0:
+            self.progress_protocol.setRange(0, total)
+            self.progress_protocol.setValue(min(completed, total))
+        stage = str(event.get("stage") or "")
+        cat_id = event.get("cat_id")
+        report = str(event.get("report") or "")
+        if stage == "start":
+            self.lbl_protocol_progress.setText(f"Отчётов: 0 из {total}")
+        elif stage == "report_start":
+            if cat_id is not None:
+                self._set_category_row_background(cat_id, QColor("#fff3cd"))
+            self.lbl_protocol_progress.setText(f"Формируется: {report} ({completed} из {total})")
+        elif stage == "report_done":
+            self.lbl_protocol_progress.setText(f"Готово отчётов: {completed} из {total}")
+        elif stage == "category_done":
+            if cat_id is not None:
+                self._set_category_row_background(cat_id, QColor("#d4edda"))
+            self.lbl_protocol_progress.setText(f"Категория готова. Отчётов: {completed} из {total}")
+        elif stage == "failed":
+            if cat_id is not None:
+                self._set_category_row_background(cat_id, QColor("#f8d7da"))
+            self.lbl_protocol_progress.setText(f"Ошибка: {event.get('message')}")
+        QApplication.processEvents()
 
     def _update_group_stats_label(self) -> None:
         if not self._merge_groups:
@@ -871,11 +1213,8 @@ class MainWindow(QMainWindow):
             parts.append(f"Р{gid}: участников {total}, разминок {warmup_count} (по {group_size})")
         self.lbl_group_stats.setText("Группы склейки: " + " | ".join(parts))
 
-    def handle_export(self) -> None:
-        if not self._base_dir:
-            QMessageBox.warning(self, "Папка", "Сначала выберите папку с DBF.")
-            return
-        selected_items = self.list_widget.selectedItems()
+    def _collect_selected_pairs_for_export(self) -> list[tuple[object, object, str]] | None:
+        selected_items = self._checked_category_items()
         selected: list[tuple[object, object, str]] = []
         use_group_default = self._merge_groups and not selected_items
         if use_group_default:
@@ -900,15 +1239,80 @@ class MainWindow(QMainWindow):
                         used.add(key)
             if not selected:
                 QMessageBox.warning(self, "Выбор", "Назначьте хотя бы одну строку в группу склейки.")
-                return
+                return None
         else:
             if not selected_items:
-                QMessageBox.warning(self, "Выбор", "Отметьте хотя бы одну категорию/сегмент.")
-                return
+                QMessageBox.warning(self, "Выбор", "Поставьте галочку хотя бы у одной категории/сегмента.")
+                return None
             for i in range(self.list_widget.count()):
                 it = self.list_widget.item(i)
-                if it.isSelected():
+                if it.checkState() == Qt.CheckState.Checked:
                     selected.append(it.data(Qt.UserRole))
+        return selected
+
+    def handle_protocol_export(self) -> None:
+        if not self._base_dir:
+            QMessageBox.warning(self, "Папка", "Сначала выберите папку с DBF.")
+            return
+        selected = self._collect_selected_pairs_for_export()
+        if not selected:
+            return
+        include_result = self.chk_protocol_result.isChecked()
+        include_segment_details = self.chk_protocol_segment_details.isChecked()
+        include_judges_scores = self.chk_protocol_judges_scores.isChecked()
+        if not (include_result or include_segment_details or include_judges_scores):
+            QMessageBox.warning(self, "Итоговый протокол", "Выберите хотя бы один блок протокола.")
+            return
+        dest, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить итоговый протокол",
+            str((self._base_dir / self._default_protocol_output_filename()) if self._base_dir else Path(self._default_protocol_output_filename())),
+            "PDF (*.pdf)",
+        )
+        if not dest:
+            return
+        out = Path(dest)
+        self._save_layout_state_silent()
+        self._reset_protocol_progress_ui()
+        self._log.info("Экспорт итогового протокола: %s строк → %s", len(selected), out)
+        results, merged = export_protocol_bundle(
+            self._base_dir,
+            selected,
+            out,
+            include_result=include_result,
+            include_segment_details=include_segment_details,
+            include_judges_scores=include_judges_scores,
+            protocol_renderer="rpt" if self.chk_protocol_use_rpt.isChecked() else "python",
+            category_title_overrides=self._collect_protocol_title_overrides(),
+            rpt_template_paths=self._collect_protocol_rpt_templates(),
+            progress_callback=self._on_protocol_progress,
+        )
+        for r in results:
+            if r.ok:
+                self._log.info("[OK] итоговый протокол: %s", r.label)
+            else:
+                self._log.error("[ОШИБКА] итоговый протокол: %s — %s", r.label, r.message)
+        if merged:
+            self._log.info("Готово: %s", merged)
+            self.lbl_protocol_progress.setText(f"Готово: {merged}")
+            if merged != out:
+                QMessageBox.warning(
+                    self,
+                    "Файл был открыт",
+                    f"Целевой PDF занят другим приложением.\nСохранено в новый файл:\n{merged}",
+                )
+            else:
+                QMessageBox.information(self, "Готово", f"Итоговый протокол сохранён:\n{merged}")
+        else:
+            QMessageBox.critical(self, "Ошибка", "Не удалось создать ни одного фрагмента итогового протокола.")
+
+    def handle_export(self) -> None:
+        if not self._base_dir:
+            QMessageBox.warning(self, "Папка", "Сначала выберите папку с DBF.")
+            return
+        selected = self._collect_selected_pairs_for_export()
+        if not selected:
+            return
         dest, _ = QFileDialog.getSaveFileName(
             self,
             "Сохранить объединённый PDF",
