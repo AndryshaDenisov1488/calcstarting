@@ -376,6 +376,16 @@ try {{
   $app = New-Object -ComObject CrystalRuntime.Application
   $report = $app.OpenReport($rpt)
   $report.EnableParameterPrompting = $false
+  try {{
+    for ($i=1; $i -le $report.FormulaFields.Count; $i++) {{
+      $formulaField = $report.FormulaFields.Item($i)
+      $formulaName = ''
+      try {{ $formulaName = [string]$formulaField.Name }} catch {{}}
+      if ($formulaName -match '^\{{?@?MessageL[Ii]ne[12]\}}?$') {{
+        $formulaField.Text = '""'
+      }}
+    }}
+  }} catch {{}}
   for ($i=1; $i -le $report.Database.Tables.Count; $i++) {{
     $table = $report.Database.Tables.Item($i)
     if ($table.Name -eq 'RV_') {{
