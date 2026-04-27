@@ -120,21 +120,27 @@ def rule_for_category(cat: dict[str, Any]) -> EvskTitleRule | None:
     return EvskTitleRule(discipline=discipline, rank=rank, age_groups=_age_groups(cat_type, level, gender))
 
 
-def official_title_for_category(cat: dict[str, Any], selected_age_groups: list[str] | tuple[str, ...] | None = None) -> str | None:
+def official_title_for_category(
+    cat: dict[str, Any],
+    selected_age_groups: list[str] | tuple[str, ...] | None = None,
+    *,
+    include_discipline: bool = True,
+) -> str | None:
     rule = rule_for_category(cat)
     if not rule:
         return None
     age_groups = sort_age_groups(tuple(selected_age_groups) if selected_age_groups is not None else rule.age_groups)
-    lines = [rule.discipline, rule.rank]
+    lines = [rule.discipline] if include_discipline else []
+    lines.append(rule.rank)
     if age_groups:
         lines.append(", ".join(age_groups))
     return "\r\n".join(lines)
 
 
-def build_default_title_overrides(snapshot: Any) -> dict[Any, str]:
+def build_default_title_overrides(snapshot: Any, *, include_discipline: bool = True) -> dict[Any, str]:
     overrides: dict[Any, str] = {}
     for cat in snapshot.cat:
-        title = official_title_for_category(cat)
+        title = official_title_for_category(cat, include_discipline=include_discipline)
         if title:
             overrides[rec_get(cat, "CAT_ID")] = title
     return overrides

@@ -380,6 +380,12 @@ class MainWindow(QMainWindow):
         self.lbl_protocol_title_preview = QLabel("Выберите категорию, чтобы увидеть заголовок по ЕВСК.")
         self.lbl_protocol_title_preview.setWordWrap(True)
         title_layout.addWidget(self.lbl_protocol_title_preview)
+        w_protocol_discipline, self.chk_protocol_include_discipline = _checkbox_with_wrapped_label(
+            "Добавлять вид ФК в официальный заголовок"
+        )
+        self.chk_protocol_include_discipline.setChecked(True)
+        self.chk_protocol_include_discipline.stateChanged.connect(lambda _state: self._on_protocol_title_option_changed())
+        title_layout.addWidget(w_protocol_discipline)
         self.protocol_age_widget = QWidget()
         self.protocol_age_layout = QVBoxLayout(self.protocol_age_widget)
         self.protocol_age_layout.setContentsMargins(0, 0, 0, 0)
@@ -577,6 +583,7 @@ class MainWindow(QMainWindow):
             "group_insert_texts": group_texts,
             "global_warmup_size": int(self.spn_warmup.value()),
             "protocol_age_groups": self._category_age_selection,
+            "protocol_include_discipline": self.chk_protocol_include_discipline.isChecked(),
             "protocol_rpt_templates": {
                 key: edit.text().strip()
                 for key, edit in self._protocol_rpt_edits.items()
@@ -623,6 +630,8 @@ class MainWindow(QMainWindow):
             str(k): [str(v).strip() for v in values or [] if str(v).strip()]
             for k, values in age_state.items()
         }
+        if "protocol_include_discipline" in state:
+            self.chk_protocol_include_discipline.setChecked(bool(state.get("protocol_include_discipline")))
         for key, path in (state.get("protocol_rpt_templates") or {}).items():
             edit = self._protocol_rpt_edits.get(str(key))
             if edit and str(path).strip():
@@ -1098,8 +1107,16 @@ class MainWindow(QMainWindow):
             empty = QLabel("Для этого разряда возрастные группы не заданы в правилах.")
             empty.setWordWrap(True)
             self.protocol_age_layout.addWidget(empty)
-        title = official_title_for_category(cat, selected)
+        title = official_title_for_category(
+            cat,
+            selected,
+            include_discipline=self.chk_protocol_include_discipline.isChecked(),
+        )
         self.lbl_protocol_title_preview.setText(title or str(rec_get(cat, "CAT_NAME") or "").strip())
+
+    def _on_protocol_title_option_changed(self) -> None:
+        self._refresh_protocol_title_preview_only()
+        self._save_layout_state_silent()
 
     def _on_protocol_age_changed(self, category_key: str) -> None:
         selected = [cb.text() for cb in self._protocol_age_checkboxes if cb.isChecked()]
@@ -1115,7 +1132,11 @@ class MainWindow(QMainWindow):
         if not cat:
             return
         key = cat_key(rec_get(cat, "CAT_ID"))
-        title = official_title_for_category(cat, self._category_age_selection.get(key))
+        title = official_title_for_category(
+            cat,
+            self._category_age_selection.get(key),
+            include_discipline=self.chk_protocol_include_discipline.isChecked(),
+        )
         if title:
             self.lbl_protocol_title_preview.setText(title)
 
@@ -1125,7 +1146,11 @@ class MainWindow(QMainWindow):
         overrides: dict[object, str] = {}
         for cat in self._snapshot.cat:
             key = cat_key(rec_get(cat, "CAT_ID"))
-            title = official_title_for_category(cat, self._category_age_selection.get(key))
+            title = official_title_for_category(
+                cat,
+                self._category_age_selection.get(key),
+                include_discipline=self.chk_protocol_include_discipline.isChecked(),
+            )
             if title:
                 overrides[rec_get(cat, "CAT_ID")] = title
         return overrides

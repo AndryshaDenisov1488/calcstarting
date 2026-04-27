@@ -11,6 +11,7 @@ import sys
 from pathlib import Path
 
 from calcfs_pdf_export.calcfs_store import discover_cat_scp_pairs, load_calcfs_folder
+from calcfs_pdf_export.evsk_titles import build_default_title_overrides
 from calcfs_pdf_export.ids import normalize_id
 from calcfs_pdf_export.export_pipeline import export_protocol_bundle, export_starting_order_bundle
 
@@ -43,6 +44,11 @@ def main() -> int:
     parser.add_argument("--result-rpt", type=Path, help="Путь к RPT-шаблону для ResultWithClubNames")
     parser.add_argument("--segment-details-rpt", type=Path, help="Путь к RPT-шаблону для ResultForSegmentDetails")
     parser.add_argument("--judges-scores-rpt", type=Path, help="Путь к RPT-шаблону для JudgesScores")
+    parser.add_argument(
+        "--no-protocol-discipline",
+        action="store_true",
+        help="Не добавлять вид ФК в официальный заголовок итогового протокола",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -95,6 +101,10 @@ def main() -> int:
             include_segment_details=not args.no_segment_details,
             include_judges_scores=not args.no_judges_scores,
             protocol_renderer=args.protocol_renderer,
+            category_title_overrides=build_default_title_overrides(
+                snap,
+                include_discipline=not args.no_protocol_discipline,
+            ),
             rpt_template_paths=rpt_template_paths,
         )
     else:
